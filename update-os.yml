@@ -1,18 +1,26 @@
 name: OS Update
+
 on:
   schedule:
-    - cron: "0 3 * **"  # UTC time
+    - cron: "0 3 * * *"  # Scheduled event at 3:00 AM UTC
   workflow_dispatch:
-env:
-  RUN_OS_UPDATE: "false"
-  REBOOT_IF_NEEDED: "false"
+
 concurrency:
   group: os-update
-  cancel-in-progress: false  # Don't cancel in-progress jobs
+  cancel-in-progress: true  # Prevent queue buildup
+
 jobs:
   update-os:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && env.RUN_OS_UPDATE == 'true')
+
+    # Move env variables inside the job to make them accessible in the if condition
+    env:
+      RUN_OS_UPDATE: "false"    # Change to "true" to enable scheduled runs
+      REBOOT_IF_NEEDED: "false"
+
+    # This if condition now works because env variables are defined inside the job
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && env.RUN_OS_UPDATE == 'true') }}
+
     timeout-minutes: 60
     
     outputs:
@@ -36,11 +44,13 @@ jobs:
             set -eo pipefail
             export NEEDRESTART_MODE=a
             export DEBIAN_FRONTEND=noninteractive
+
             # Disk check
             DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
             echo "disk_space_before=$DISK_SPACE_BEFORE" >> $GITHUB_OUTPUT
             AVAIL_SPACE_KB=$(df / | awk 'NR==2 {print $4}')
             (( $AVAIL_SPACE_KB < 1048576 )) && { echo "Insufficient disk space"; exit 1; }
+
             # Package operations
             sudo apt-get -qy clean
             sudo apt-get -qy update
@@ -52,16 +62,20 @@ jobs:
             echo "upgrade_list<<EOF" >> $GITHUB_OUTPUT
             echo "$UPGRADE_LIST" | sed 's/^/- /' >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
+
             # Perform upgrade
             sudo apt-get -qy -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
             sudo apt-get -qy autoremove
+
             # Post-update
             echo "disk_space_after=$(df -h / | awk 'NR==2 {print $4}')" >> $GITHUB_OUTPUT
+
             # Reboot handling
             if [[ "$REBOOT_FLAG" = "true" && -f /var/run/reboot-required ]]; then
               sudo nohup reboot </dev/null &>/dev/null &
               exit 0
             fi
+
       - name: Create job summary
         if: always()
         run: |
