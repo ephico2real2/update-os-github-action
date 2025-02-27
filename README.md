@@ -1,5 +1,3 @@
-I've created a comprehensive README.md file for your Git repository that explains the OS Update workflow:
-
 # Automated OS Update Workflow
 
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white)
