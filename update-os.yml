@@ -1,0 +1,76 @@
+name: OS Update
+on:
+  schedule:
+    - cron: "0 3 * **"  # UTC time
+  workflow_dispatch:
+env:
+  RUN_OS_UPDATE: "false"
+  REBOOT_IF_NEEDED: "false"
+concurrency:
+  group: os-update
+  cancel-in-progress: false  # Don't cancel in-progress jobs
+jobs:
+  update-os:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && env.RUN_OS_UPDATE == 'true')
+    timeout-minutes: 60
+    
+    outputs:
+      upgrade_list: ${{ steps.update_os_step.outputs.upgrade_list }}
+      disk_space_before: ${{ steps.update_os_step.outputs.disk_space_before }}
+      disk_space_after: ${{ steps.update_os_step.outputs.disk_space_after }}
+      update_count: ${{ steps.update_os_step.outputs.update_count }}
+    
+    steps:
+      - id: update_os_step
+        name: Update OS via SSH
+        uses: appleboy/ssh-action@master
+        env: 
+          REBOOT_FLAG: ${{ env.REBOOT_IF_NEEDED }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -eo pipefail
+            export NEEDRESTART_MODE=a
+            export DEBIAN_FRONTEND=noninteractive
+            # Disk check
+            DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
+            echo "disk_space_before=$DISK_SPACE_BEFORE" >> $GITHUB_OUTPUT
+            AVAIL_SPACE_KB=$(df / | awk 'NR==2 {print $4}')
+            (( $AVAIL_SPACE_KB < 1048576 )) && { echo "Insufficient disk space"; exit 1; }
+            # Package operations
+            sudo apt-get -qy clean
+            sudo apt-get -qy update
+            UPGRADE_LIST=$(sudo apt list --upgradable 2>/dev/null | grep -v "Listing...")
+            UPDATE_COUNT=$(echo "$UPGRADE_LIST" | wc -l)
+            
+            # Output handling
+            echo "update_count=$UPDATE_COUNT" >> $GITHUB_OUTPUT
+            echo "upgrade_list<<EOF" >> $GITHUB_OUTPUT
+            echo "$UPGRADE_LIST" | sed 's/^/- /' >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            # Perform upgrade
+            sudo apt-get -qy -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
+            sudo apt-get -qy autoremove
+            # Post-update
+            echo "disk_space_after=$(df -h / | awk 'NR==2 {print $4}')" >> $GITHUB_OUTPUT
+            # Reboot handling
+            if [[ "$REBOOT_FLAG" = "true" && -f /var/run/reboot-required ]]; then
+              sudo nohup reboot </dev/null &>/dev/null &
+              exit 0
+            fi
+      - name: Create job summary
+        if: always()
+        run: |
+          echo "## OS Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          [[ "${{ job.status }}" == "success" ]] && {
+            echo "✅ Successfully updated ${{ steps.update_os_step.outputs.update_count }} packages"
+            echo "Disk space before: ${{ steps.update_os_step.outputs.disk_space_before }}"
+            echo "Disk space after: ${{ steps.update_os_step.outputs.disk_space_after }}"
+          } || {
+            echo "❌ Update failed! Check logs for details."
+          }
