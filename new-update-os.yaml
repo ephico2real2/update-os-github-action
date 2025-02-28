@@ -132,8 +132,9 @@ jobs:
   reboot-if-needed:
     needs: update-os  # Ensure this runs after the update job is complete
     runs-on: ubuntu-latest
-    # Check output from the previous job
-    if: ${{ needs.update-os.outputs.reboot_required == 'true' }}
+    env:
+      REBOOT_IF_NEEDED: ${{ github.event.inputs.reboot_if_needed }}
+    if: ${{ github.event.inputs.reboot_if_needed == 'true' }}
     steps:
       - name: Reboot Remote Server
         uses: appleboy/ssh-action@master
@@ -141,6 +142,13 @@ jobs:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          envs: REBOOT_IF_NEEDED
           script: |
-            echo "Rebooting the server as REBOOT_IF_NEEDED is set to true."
-            sudo nohup reboot </dev/null &>/dev/null &
+            echo "REBOOT_IF_NEEDED is set to $REBOOT_IF_NEEDED"
+            if [[ "$REBOOT_IF_NEEDED" == "true" ]]; then
+              echo "Rebooting the server..."
+              sudo nohup reboot </dev/null &>/dev/null &
+            else
+              echo "No reboot needed."
+            fi
+
