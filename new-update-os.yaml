@@ -1,0 +1,141 @@
+name: OS Update
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # Runs daily at 3 AM UTC
+  workflow_dispatch:
+
+concurrency:
+  group: os-update
+  cancel-in-progress: true
+
+jobs:
+  update-os:
+    runs-on: ubuntu-latest
+    env:
+      RUN_OS_UPDATE: "false"
+      REBOOT_IF_NEEDED: "false"
+    timeout-minutes: 60
+    
+    outputs:
+      upgrade_list: ${{ steps.parse_outputs.outputs.upgrade_list }}
+      disk_space_before: ${{ steps.parse_outputs.outputs.disk_space_before }}
+      disk_space_after: ${{ steps.parse_outputs.outputs.disk_space_after }}
+      update_count: ${{ steps.parse_outputs.outputs.update_count }}
+    
+    steps:
+      - name: Check if Update Should Run
+        id: check_update
+        run: echo "RUN_OS_UPDATE is set to $RUN_OS_UPDATE"
+        
+      - name: Update OS via SSH and Generate Summary
+        id: update_os_step
+        uses: appleboy/ssh-action@master
+        env: 
+          RUN_OS_UPDATE: ${{ env.RUN_OS_UPDATE }}
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          envs: RUN_OS_UPDATE  # Explicitly passing environment variables
+          script: |
+            set -eo pipefail
+            export NEEDRESTART_MODE=a
+            export DEBIAN_FRONTEND=noninteractive
+            
+            # Generate unique output file ON REMOTE SERVER
+            OUTPUT_FILE="/tmp/update_os_$(date +%s).txt"
+            SUMMARY_FILE="/tmp/os_update_summary.txt"
+            
+            # Disk check
+            DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
+            AVAIL_SPACE_KB=$(df / | awk 'NR==2 {print $4}')
+            (( $AVAIL_SPACE_KB < 1048576 )) && { echo "Insufficient disk space"; exit 1; }
+
+            # Package operations
+            sudo apt-get -qy clean
+            sudo apt-get -qy update
+            
+            # Capture and redirect to file
+            echo "upgrade_list=" >> "$OUTPUT_FILE"
+            {
+              sudo apt list --upgradable 2>/dev/null | grep -v "Listing..."
+            } >> "$OUTPUT_FILE"
+            
+            UPDATE_COUNT=$(sudo apt list --upgradable 2>/dev/null | grep -v "Listing..." | wc -l)
+
+            # Perform upgrade
+            sudo apt-get -qy -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
+            sudo apt-get -qy autoremove
+
+            # Post-update
+            DISK_SPACE_AFTER=$(df -h / | awk 'NR==2 {print $4}')
+
+            # Write outputs
+            {
+              echo "disk_space_before=$DISK_SPACE_BEFORE"
+              echo "disk_space_after=$DISK_SPACE_AFTER"
+              echo "update_count=$UPDATE_COUNT"
+            } >> "$OUTPUT_FILE"
+            chmod 600 "$OUTPUT_FILE"
+
+            # Debugging and Summary Generation
+            echo "## OS Update Summary" > "$SUMMARY_FILE"
+            echo "**Status:** success" >> "$SUMMARY_FILE"
+            echo "✅ Updated $UPDATE_COUNT packages" >> "$SUMMARY_FILE"
+            echo "💽 Disk space before: $DISK_SPACE_BEFORE" >> "$SUMMARY_FILE"
+            echo "💽 Disk space after: $DISK_SPACE_AFTER" >> "$SUMMARY_FILE"
+            
+            if [[ -f "$OUTPUT_FILE" ]]; then
+              UPGRADE_LIST=$(awk '/upgrade_list=/{flag=1; next} /EOF/{flag=0} flag' "$OUTPUT_FILE")
+
+              if [[ -n "$UPGRADE_LIST" ]]; then
+                echo "### 📦 Upgraded Packages" >> "$SUMMARY_FILE"
+                echo '```' >> "$SUMMARY_FILE"
+                echo "$UPGRADE_LIST" >> "$SUMMARY_FILE"
+                echo '```' >> "$SUMMARY_FILE"
+              else
+                echo "No packages upgraded" >> "$SUMMARY_FILE"
+              fi
+            else
+              echo "Output file does NOT exist!"
+              echo "No updates were performed." >> "$SUMMARY_FILE"
+            fi
+
+      - name: Retrieve Remote Summary
+        id: get_summary
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          script: |
+            cat /tmp/os_update_summary.txt 2>/dev/null || echo "No summary file found" > /tmp/local_summary.txt
+        continue-on-error: true
+        
+      - name: Cleanup Remote Files
+        if: always()
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          script: |
+            rm -f /tmp/update_os_*.txt
+            rm -f /tmp/os_update_summary.txt
+            echo "Temporary files cleaned up."
+
+  reboot-if-needed:
+    needs: update-os  # Ensure this runs after the update job is complete
+    runs-on: ubuntu-latest
+    if: ${{ env.REBOOT_IF_NEEDED == 'true' }}  # Only run if reboot is needed
+    steps:
+      - name: Reboot Remote Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          script: |
+            echo "Rebooting the server as REBOOT_IF_NEEDED is set to true."
+            sudo nohup reboot </dev/null &>/dev/null &
