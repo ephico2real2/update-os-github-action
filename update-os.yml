@@ -113,7 +113,7 @@ jobs:
             
             echo "SUMMARY_FILE_PATH=$SUMMARY_FILE" > /tmp/summary_marker.txt
 
-      - name: Extract Summary Content
+      - name: Retrieve Remote Summary
         id: get_summary
         uses: appleboy/ssh-action@master
         with:
@@ -123,6 +123,7 @@ jobs:
           script: |
             cat /tmp/os_update_summary.txt 2>/dev/null || echo "No summary file found"
 
-      - name: Append to GitHub Summary
+      - name: Store Summary as Output
+        id: store_summary
         run: |
-          echo "${{ steps.get_summary.outputs.stdout }}" >> $GITHUB_STEP_SUMMARY
+          echo "remote_summary=${{ steps.get_summary.outputs.stdout }}" >> $GITHUB_ENV
