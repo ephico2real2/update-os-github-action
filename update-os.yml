@@ -23,18 +23,23 @@ jobs:
       disk_space_before: ${{ steps.parse_outputs.outputs.disk_space_before }}
       disk_space_after: ${{ steps.parse_outputs.outputs.disk_space_after }}
       update_count: ${{ steps.parse_outputs.outputs.update_count }}
-      remote_summary: ${{ steps.get_summary.outputs.remote_summary }}
     
     steps:
-      - id: update_os_step
-        name: Update OS via SSH and Generate Summary
+      - name: Check if Update Should Run
+        id: check_update
+        run: echo "RUN_OS_UPDATE is set to $RUN_OS_UPDATE"
+        
+      - name: Update OS via SSH and Generate Summary
+        id: update_os_step
         uses: appleboy/ssh-action@master
         env: 
           REBOOT_FLAG: ${{ env.REBOOT_IF_NEEDED }}
+          RUN_OS_UPDATE: ${{ env.RUN_OS_UPDATE }}
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          envs: REBOOT_FLAG,RUN_OS_UPDATE  # Explicitly passing environment variables
           script: |
             set -eo pipefail
             export NEEDRESTART_MODE=a
@@ -43,9 +48,6 @@ jobs:
             # Generate unique output file ON REMOTE SERVER
             OUTPUT_FILE="/tmp/update_os_$(date +%s).txt"
             SUMMARY_FILE="/tmp/os_update_summary.txt"
-            
-            # Store the path for retrieval
-            echo "OUTPUT_FILE_PATH=$OUTPUT_FILE" > /tmp/output_marker.txt
             
             # Disk check
             DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
@@ -107,9 +109,6 @@ jobs:
               echo "Output file does NOT exist!"
               echo "No updates were performed." >> "$SUMMARY_FILE"
             fi
-            
-            # Capture the summary content
-            echo "SUMMARY_FILE_PATH=$SUMMARY_FILE" > /tmp/summary_marker.txt
 
       - name: Retrieve Remote Summary
         id: get_summary
@@ -121,13 +120,29 @@ jobs:
           script: |
             cat /tmp/os_update_summary.txt 2>/dev/null || echo "No summary file found"
 
-      - name: Store Summary as Output
-        id: store_summary
+      - name: Parse Outputs
+        id: parse_outputs
         run: |
-          echo "remote_summary=$(echo '${{ steps.get_summary.outputs.stdout }}')" >> $GITHUB_OUTPUT
+          DISK_BEFORE=$(echo "${{ steps.get_summary.outputs.stdout }}" | awk -F= '/disk_space_before=/ {print $2}')
+          DISK_AFTER=$(echo "${{ steps.get_summary.outputs.stdout }}" | awk -F= '/disk_space_after=/ {print $2}')
+          UPDATE_COUNT=$(echo "${{ steps.get_summary.outputs.stdout }}" | awk -F= '/update_count=/ {print $2}')
+          
+          UPGRADE_LIST=$(echo "${{ steps.get_summary.outputs.stdout }}" | 
+            awk '/upgrade_list=/{flag=1; next} /EOF/{flag=0} flag')
+          
+          echo "disk_space_before=${DISK_BEFORE:-Unknown}" >> $GITHUB_OUTPUT
+          echo "disk_space_after=${DISK_AFTER:-Unknown}" >> $GITHUB_OUTPUT
+          echo "update_count=${UPDATE_COUNT:-0}" >> $GITHUB_OUTPUT
+          echo "upgrade_list=${UPGRADE_LIST:-No packages upgraded}" >> $GITHUB_OUTPUT
 
-      - name: Append to GitHub Summary
+      - name: Cleanup Remote Files
         if: always()
-        run: |
-          echo "${{ steps.store_summary.outputs.remote_summary }}" >> $GITHUB_STEP_SUMMARY
-
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          script: |
+            rm -f /tmp/update_os_*.txt
+            rm -f /tmp/os_update_summary.txt
+            echo "Temporary files cleaned up."
