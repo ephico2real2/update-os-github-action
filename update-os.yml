@@ -23,6 +23,7 @@ jobs:
       disk_space_before: ${{ steps.parse_outputs.outputs.disk_space_before }}
       disk_space_after: ${{ steps.parse_outputs.outputs.disk_space_after }}
       update_count: ${{ steps.parse_outputs.outputs.update_count }}
+      remote_summary: ${{ steps.get_summary.outputs.remote_summary }}
     
     steps:
       - id: update_os_step
@@ -92,10 +93,6 @@ jobs:
             echo "💽 Disk space after: $DISK_SPACE_AFTER" >> "$SUMMARY_FILE"
             
             if [[ -f "$OUTPUT_FILE" ]]; then
-              echo "Output file exists: $OUTPUT_FILE"
-              ls -lah "$OUTPUT_FILE"
-              cat "$OUTPUT_FILE"
-              
               UPGRADE_LIST=$(awk '/upgrade_list=/{flag=1; next} /EOF/{flag=0} flag' "$OUTPUT_FILE")
 
               if [[ -n "$UPGRADE_LIST" ]]; then
@@ -111,6 +108,7 @@ jobs:
               echo "No updates were performed." >> "$SUMMARY_FILE"
             fi
             
+            # Capture the summary content
             echo "SUMMARY_FILE_PATH=$SUMMARY_FILE" > /tmp/summary_marker.txt
 
       - name: Retrieve Remote Summary
@@ -127,3 +125,8 @@ jobs:
         id: store_summary
         run: |
           echo "remote_summary=${{ steps.get_summary.outputs.stdout }}" >> $GITHUB_ENV
+
+      - name: Append to GitHub Summary
+        if: always()
+        run: |
+          echo "${{ env.remote_summary }}" >> $GITHUB_STEP_SUMMARY
