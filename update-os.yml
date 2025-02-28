@@ -118,22 +118,23 @@ jobs:
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            cat /tmp/os_update_summary.txt 2>/dev/null || echo "No summary file found"
-
-      - name: Parse Outputs
-        id: parse_outputs
+            cat /tmp/os_update_summary.txt 2>/dev/null || echo "No summary file found" > /tmp/local_summary.txt
+        continue-on-error: true
+        
+      - name: Store Summary Locally
         run: |
-          DISK_BEFORE=$(echo "${{ steps.get_summary.outputs.stdout }}" | awk -F= '/disk_space_before=/ {print $2}')
-          DISK_AFTER=$(echo "${{ steps.get_summary.outputs.stdout }}" | awk -F= '/disk_space_after=/ {print $2}')
-          UPDATE_COUNT=$(echo "${{ steps.get_summary.outputs.stdout }}" | awk -F= '/update_count=/ {print $2}')
+          echo "${{ steps.get_summary.outputs.stdout }}" > remote_summary.txt
+
+      - name: Read Summary
+        id: read_summary
+        run: |
+          REMOTE_SUMMARY=$(cat remote_summary.txt)
+          echo "remote_summary=$REMOTE_SUMMARY" >> $GITHUB_OUTPUT
           
-          UPGRADE_LIST=$(echo "${{ steps.get_summary.outputs.stdout }}" | 
-            awk '/upgrade_list=/{flag=1; next} /EOF/{flag=0} flag')
-          
-          echo "disk_space_before=${DISK_BEFORE:-Unknown}" >> $GITHUB_OUTPUT
-          echo "disk_space_after=${DISK_AFTER:-Unknown}" >> $GITHUB_OUTPUT
-          echo "update_count=${UPDATE_COUNT:-0}" >> $GITHUB_OUTPUT
-          echo "upgrade_list=${UPGRADE_LIST:-No packages upgraded}" >> $GITHUB_OUTPUT
+      - name: Output Debug
+        run: |
+          echo "Remote Summary Content:"
+          echo "${{ steps.read_summary.outputs.remote_summary }}"
 
       - name: Cleanup Remote Files
         if: always()
@@ -145,4 +146,4 @@ jobs:
           script: |
             rm -f /tmp/update_os_*.txt
             rm -f /tmp/os_update_summary.txt
-            echo "Temporary files cleaned up."
+            echo "Temporary files cleaned up.
