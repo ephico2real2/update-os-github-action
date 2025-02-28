@@ -2,32 +2,27 @@ name: OS Update
 
 on:
   schedule:
-    - cron: "0 3 * * *"  # Scheduled event at 3:00 AM UTC
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:
   group: os-update
-  cancel-in-progress: true  # Prevent queue buildup
+  cancel-in-progress: true
 
 jobs:
   update-os:
     runs-on: ubuntu-latest
-
-    # Move env variables inside the job to make them accessible in the if condition
     env:
-      RUN_OS_UPDATE: "false"    # Change to "true" to enable scheduled runs
+      RUN_OS_UPDATE: "false"
       REBOOT_IF_NEEDED: "false"
-
-    # This if condition now works because env variables are defined inside the job
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && env.RUN_OS_UPDATE == 'true') }}
-
     timeout-minutes: 60
     
     outputs:
-      upgrade_list: ${{ steps.update_os_step.outputs.upgrade_list }}
-      disk_space_before: ${{ steps.update_os_step.outputs.disk_space_before }}
-      disk_space_after: ${{ steps.update_os_step.outputs.disk_space_after }}
-      update_count: ${{ steps.update_os_step.outputs.update_count }}
+      upgrade_list: ${{ steps.parse_outputs.outputs.upgrade_list }}
+      disk_space_before: ${{ steps.parse_outputs.outputs.disk_space_before }}
+      disk_space_after: ${{ steps.parse_outputs.outputs.disk_space_after }}
+      update_count: ${{ steps.parse_outputs.outputs.update_count }}
     
     steps:
       - id: update_os_step
@@ -44,10 +39,16 @@ jobs:
             set -eo pipefail
             export NEEDRESTART_MODE=a
             export DEBIAN_FRONTEND=noninteractive
-
+            
+            # Generate unique output file ON REMOTE SERVER
+            OUTPUT_FILE="/tmp/update_os_$(date +%s).txt"
+            trap "rm -f $OUTPUT_FILE" EXIT  # Cleanup on exit
+            
+            # Output file marker
+            echo "GITHUB_OUTPUT_FILE=$OUTPUT_FILE"
+            
             # Disk check
             DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
-            echo "disk_space_before=$DISK_SPACE_BEFORE" >> $GITHUB_OUTPUT
             AVAIL_SPACE_KB=$(df / | awk 'NR==2 {print $4}')
             (( $AVAIL_SPACE_KB < 1048576 )) && { echo "Insufficient disk space"; exit 1; }
 
@@ -56,19 +57,24 @@ jobs:
             sudo apt-get -qy update
             UPGRADE_LIST=$(sudo apt list --upgradable 2>/dev/null | grep -v "Listing...")
             UPDATE_COUNT=$(echo "$UPGRADE_LIST" | wc -l)
-            
-            # Output handling
-            echo "update_count=$UPDATE_COUNT" >> $GITHUB_OUTPUT
-            echo "upgrade_list<<EOF" >> $GITHUB_OUTPUT
-            echo "$UPGRADE_LIST" | sed 's/^/- /' >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
 
             # Perform upgrade
             sudo apt-get -qy -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
             sudo apt-get -qy autoremove
 
             # Post-update
-            echo "disk_space_after=$(df -h / | awk 'NR==2 {print $4}')" >> $GITHUB_OUTPUT
+            DISK_SPACE_AFTER=$(df -h / | awk 'NR==2 {print $4}')
+
+            # Write outputs
+            {
+              echo "disk_space_before=$DISK_SPACE_BEFORE"
+              echo "disk_space_after=$DISK_SPACE_AFTER"
+              echo "update_count=$UPDATE_COUNT"
+              echo "upgrade_list<<EOF"
+              echo "$UPGRADE_LIST" | sed 's/^/- /'
+              echo "EOF"
+            } > "$OUTPUT_FILE"
+            chmod 600 "$OUTPUT_FILE"
 
             # Reboot handling
             if [[ "$REBOOT_FLAG" = "true" && -f /var/run/reboot-required ]]; then
@@ -76,15 +82,62 @@ jobs:
               exit 0
             fi
 
-      - name: Create job summary
+      - name: Extract Output File Path
+        id: extract_path
+        run: |
+          FILE_PATH=$(echo "${{ steps.update_os_step.outputs.result }}" | awk -F= '/GITHUB_OUTPUT_FILE=/ {print $2}')
+          echo "output_file=$FILE_PATH" >> $GITHUB_OUTPUT
+
+      - name: Retrieve Output File
+        id: get_outputs
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cat "${{ steps.extract_path.outputs.output_file }}" 2>/dev/null || echo "No output file found"
+
+      - name: Parse Outputs
+        id: parse_outputs
+        run: |
+          DISK_BEFORE=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/disk_space_before=/ {print $2}')
+          DISK_AFTER=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/disk_space_after=/ {print $2}')
+          UPDATE_COUNT=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/update_count=/ {print $2}')
+          
+          UPGRADE_LIST=$(echo "${{ steps.get_outputs.outputs.result }}" | 
+            awk '/upgrade_list<<EOF/{flag=1; next} /EOF/{flag=0} flag')
+          
+          echo "disk_space_before=${DISK_BEFORE:-Unknown}" >> $GITHUB_OUTPUT
+          echo "disk_space_after=${DISK_AFTER:-Unknown}" >> $GITHUB_OUTPUT
+          echo "update_count=${UPDATE_COUNT:-0}" >> $GITHUB_OUTPUT
+          echo "upgrade_list=${UPGRADE_LIST:-No packages upgraded}" >> $GITHUB_OUTPUT
+
+      - name: Cleanup Remote File
+        if: always()
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            rm -f "${{ steps.extract_path.outputs.output_file }}" || true
+
+      - name: Create Job Summary
         if: always()
         run: |
           echo "## OS Update Summary" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          [[ "${{ job.status }}" == "success" ]] && {
-            echo "✅ Successfully updated ${{ steps.update_os_step.outputs.update_count }} packages"
-            echo "Disk space before: ${{ steps.update_os_step.outputs.disk_space_before }}"
-            echo "Disk space after: ${{ steps.update_os_step.outputs.disk_space_after }}"
-          } || {
-            echo "❌ Update failed! Check logs for details."
-          }
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "✅ Updated ${{ steps.parse_outputs.outputs.update_count }} packages" >> $GITHUB_STEP_SUMMARY
+            echo "💽 Disk space before: ${{ steps.parse_outputs.outputs.disk_space_before }}" >> $GITHUB_STEP_SUMMARY
+            echo "💽 Disk space after: ${{ steps.parse_outputs.outputs.disk_space_after }}" >> $GITHUB_STEP_SUMMARY
+            if [[ "${{ steps.parse_outputs.outputs.upgrade_list }}" != "No packages upgraded" ]]; then
+              echo "### 📦 Upgraded Packages" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "${{ steps.parse_outputs.outputs.upgrade_list }}" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ Update failed! Check logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
