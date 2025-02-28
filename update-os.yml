@@ -34,7 +34,6 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
           script: |
             set -eo pipefail
             export NEEDRESTART_MODE=a
@@ -55,8 +54,13 @@ jobs:
             # Package operations
             sudo apt-get -qy clean
             sudo apt-get -qy update
-            UPGRADE_LIST=$(sudo apt list --upgradable 2>/dev/null | grep -v "Listing...")
-            UPDATE_COUNT=$(echo "$UPGRADE_LIST" | wc -l)
+            
+            # Capture and redirect to file
+            echo "upgrade_list<<EOF" >> "$OUTPUT_FILE"
+            sudo apt list --upgradable 2>/dev/null | grep -v "Listing..." >> "$OUTPUT_FILE"
+            echo "EOF" >> "$OUTPUT_FILE"
+            
+            UPDATE_COUNT=$(sudo apt list --upgradable 2>/dev/null | grep -v "Listing..." | wc -l)
 
             # Perform upgrade
             sudo apt-get -qy -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
@@ -70,10 +74,7 @@ jobs:
               echo "disk_space_before=$DISK_SPACE_BEFORE"
               echo "disk_space_after=$DISK_SPACE_AFTER"
               echo "update_count=$UPDATE_COUNT"
-              echo "upgrade_list<<EOF"
-              echo "$UPGRADE_LIST" | sed 's/^/- /'
-              echo "EOF"
-            } > "$OUTPUT_FILE"
+            } >> "$OUTPUT_FILE"
             chmod 600 "$OUTPUT_FILE"
 
             # Reboot handling
@@ -140,4 +141,3 @@ jobs:
             fi
           else
             echo "❌ Update failed! Check logs for details." >> $GITHUB_STEP_SUMMARY
-          fi
