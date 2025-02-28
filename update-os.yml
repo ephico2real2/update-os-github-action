@@ -31,8 +31,8 @@ jobs:
         env: 
           REBOOT_FLAG: ${{ env.REBOOT_IF_NEEDED }}
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -eo pipefail
@@ -93,8 +93,8 @@ jobs:
         id: get_outputs
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cat "${{ steps.extract_path.outputs.output_file }}" 2>/dev/null || echo "No output file found"
@@ -113,17 +113,7 @@ jobs:
           echo "disk_space_after=${DISK_AFTER:-Unknown}" >> $GITHUB_OUTPUT
           echo "update_count=${UPDATE_COUNT:-0}" >> $GITHUB_OUTPUT
           echo "upgrade_list=${UPGRADE_LIST:-No packages upgraded}" >> $GITHUB_OUTPUT
-
-      - name: Cleanup Remote File
-        if: always()
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            rm -f "${{ steps.extract_path.outputs.output_file }}" || true
-
+          
       - name: Create Job Summary
         if: always()
         run: |
@@ -140,4 +130,16 @@ jobs:
               echo '```' >> $GITHUB_STEP_SUMMARY
             fi
           else
-            echo "❌ Update failed! Check logs for details." >> $GITHUB_STEP_SUMMARY
+            echo "❌ Update failed! Check logs for details." >> $GITHUB_STEP_SUMMARY      
+
+      - name: Cleanup Remote File
+        if: always()
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            rm -f "${{ steps.extract_path.outputs.output_file }}" || true
+
+
