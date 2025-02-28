@@ -34,6 +34,9 @@ jobs:
     if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.run_os_update == 'true') || (github.event_name == 'schedule' && github.event.inputs.run_os_update == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.inputs.run_os_update == 'true') }}
     timeout-minutes: 60
     
+    outputs:
+      reboot_required: ${{ steps.set_output.outputs.reboot_required }}
+    
     steps:
       - name: Check if Update Should Run
         id: check_update
@@ -44,11 +47,12 @@ jobs:
         uses: appleboy/ssh-action@master
         env: 
           RUN_OS_UPDATE: ${{ github.event.inputs.run_os_update }}
+          REBOOT_IF_NEEDED: ${{ github.event.inputs.reboot_if_needed }}
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-          envs: RUN_OS_UPDATE  # Explicitly passing environment variables
+          envs: RUN_OS_UPDATE,REBOOT_IF_NEEDED
           script: |
             set -eo pipefail
             export NEEDRESTART_MODE=a
@@ -90,28 +94,17 @@ jobs:
             } >> "$OUTPUT_FILE"
             chmod 600 "$OUTPUT_FILE"
 
-            # Debugging and Summary Generation
-            echo "## OS Update Summary" > "$SUMMARY_FILE"
-            echo "**Status:** success" >> "$SUMMARY_FILE"
-            echo "✅ Updated $UPDATE_COUNT packages" >> "$SUMMARY_FILE"
-            echo "💽 Disk space before: $DISK_SPACE_BEFORE" >> "$SUMMARY_FILE"
-            echo "💽 Disk space after: $DISK_SPACE_AFTER" >> "$SUMMARY_FILE"
-            
-            if [[ -f "$OUTPUT_FILE" ]]; then
-              UPGRADE_LIST=$(awk '/upgrade_list=/{flag=1; next} /EOF/{flag=0} flag' "$OUTPUT_FILE")
-
-              if [[ -n "$UPGRADE_LIST" ]]; then
-                echo "### 📦 Upgraded Packages" >> "$SUMMARY_FILE"
-                echo '```' >> "$SUMMARY_FILE"
-                echo "$UPGRADE_LIST" >> "$SUMMARY_FILE"
-                echo '```' >> "$SUMMARY_FILE"
-              else
-                echo "No packages upgraded" >> "$SUMMARY_FILE"
-              fi
+            # Check if reboot is needed and set output
+            if [[ -f /var/run/reboot-required ]]; then
+              echo "Reboot is required after update."
+              echo "reboot_required=true" >> $GITHUB_ENV
             else
-              echo "Output file does NOT exist!"
-              echo "No updates were performed." >> "$SUMMARY_FILE"
+              echo "reboot_required=false" >> $GITHUB_ENV
             fi
+
+      - name: Set Output for Reboot
+        id: set_output
+        run: echo "reboot_required=${{ env.REBOOT_IF_NEEDED }}" >> $GITHUB_ENV
 
       - name: Retrieve Remote Summary
         id: get_summary
@@ -139,8 +132,8 @@ jobs:
   reboot-if-needed:
     needs: update-os  # Ensure this runs after the update job is complete
     runs-on: ubuntu-latest
-    # Use the input directly for condition check
-    if: ${{ github.event.inputs.reboot_if_needed == 'true' }}
+    # Check output from the previous job
+    if: ${{ needs.update-os.outputs.reboot_required == 'true' }}
     steps:
       - name: Reboot Remote Server
         uses: appleboy/ssh-action@master
