@@ -124,9 +124,10 @@ jobs:
       - name: Store Summary as Output
         id: store_summary
         run: |
-          echo "remote_summary=${{ steps.get_summary.outputs.stdout }}" >> $GITHUB_ENV
+          echo "remote_summary=$(echo '${{ steps.get_summary.outputs.stdout }}')" >> $GITHUB_OUTPUT
 
       - name: Append to GitHub Summary
         if: always()
         run: |
-          echo "${{ env.remote_summary }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.store_summary.outputs.remote_summary }}" >> $GITHUB_STEP_SUMMARY
+
