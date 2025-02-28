@@ -1,9 +1,21 @@
 name: OS Update
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     - cron: "0 3 * * *"  # Runs daily at 3 AM UTC
   workflow_dispatch:
+    inputs:
+      run_os_update:
+        description: "Run OS update manually"
+        required: false
+        default: "false"
+      reboot_if_needed:
+        description: "Reboot after update if needed"
+        required: false
+        default: "false"
 
 concurrency:
   group: os-update
@@ -13,15 +25,14 @@ jobs:
   update-os:
     runs-on: ubuntu-latest
     env:
-      RUN_OS_UPDATE: "false"
-      REBOOT_IF_NEEDED: "false"
+      RUN_OS_UPDATE: ${{ github.event.inputs.run_os_update }}
+      REBOOT_IF_NEEDED: ${{ github.event.inputs.reboot_if_needed }}
+    # Only run if:
+    # - Manually triggered with RUN_OS_UPDATE=true
+    # - Scheduled and RUN_OS_UPDATE=true
+    # - Push to main branch and RUN_OS_UPDATE=true
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.run_os_update == 'true') || (github.event_name == 'schedule' && github.event.inputs.run_os_update == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.inputs.run_os_update == 'true') }}
     timeout-minutes: 60
-    
-    outputs:
-      upgrade_list: ${{ steps.parse_outputs.outputs.upgrade_list }}
-      disk_space_before: ${{ steps.parse_outputs.outputs.disk_space_before }}
-      disk_space_after: ${{ steps.parse_outputs.outputs.disk_space_after }}
-      update_count: ${{ steps.parse_outputs.outputs.update_count }}
     
     steps:
       - name: Check if Update Should Run
@@ -32,7 +43,7 @@ jobs:
         id: update_os_step
         uses: appleboy/ssh-action@master
         env: 
-          RUN_OS_UPDATE: ${{ env.RUN_OS_UPDATE }}
+          RUN_OS_UPDATE: ${{ github.event.inputs.run_os_update }}
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
@@ -128,7 +139,8 @@ jobs:
   reboot-if-needed:
     needs: update-os  # Ensure this runs after the update job is complete
     runs-on: ubuntu-latest
-    if: ${{ env.REBOOT_IF_NEEDED == 'true' }}  # Only run if reboot is needed
+    # Use the input directly for condition check
+    if: ${{ github.event.inputs.reboot_if_needed == 'true' }}
     steps:
       - name: Reboot Remote Server
         uses: appleboy/ssh-action@master
