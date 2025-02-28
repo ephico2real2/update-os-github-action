@@ -26,7 +26,7 @@ jobs:
     
     steps:
       - id: update_os_step
-        name: Update OS via SSH
+        name: Update OS via SSH and Generate Summary
         uses: appleboy/ssh-action@master
         env: 
           REBOOT_FLAG: ${{ env.REBOOT_IF_NEEDED }}
@@ -41,6 +41,7 @@ jobs:
             
             # Generate unique output file ON REMOTE SERVER
             OUTPUT_FILE="/tmp/update_os_$(date +%s).txt"
+            SUMMARY_FILE="/tmp/os_update_summary.txt"
             
             # Store the path for retrieval
             echo "OUTPUT_FILE_PATH=$OUTPUT_FILE" > /tmp/output_marker.txt
@@ -83,6 +84,35 @@ jobs:
               exit 0
             fi
             
+            # Debugging and Summary Generation
+            echo "## OS Update Summary" > "$SUMMARY_FILE"
+            echo "**Status:** success" >> "$SUMMARY_FILE"
+            echo "✅ Updated $UPDATE_COUNT packages" >> "$SUMMARY_FILE"
+            echo "💽 Disk space before: $DISK_SPACE_BEFORE" >> "$SUMMARY_FILE"
+            echo "💽 Disk space after: $DISK_SPACE_AFTER" >> "$SUMMARY_FILE"
+            
+            if [[ -f "$OUTPUT_FILE" ]]; then
+              echo "Output file exists: $OUTPUT_FILE"
+              ls -lah "$OUTPUT_FILE"
+              cat "$OUTPUT_FILE"
+              
+              UPGRADE_LIST=$(awk '/upgrade_list=/{flag=1; next} /EOF/{flag=0} flag' "$OUTPUT_FILE")
+
+              if [[ -n "$UPGRADE_LIST" ]]; then
+                echo "### 📦 Upgraded Packages" >> "$SUMMARY_FILE"
+                echo '```' >> "$SUMMARY_FILE"
+                echo "$UPGRADE_LIST" >> "$SUMMARY_FILE"
+                echo '```' >> "$SUMMARY_FILE"
+              else
+                echo "No packages upgraded" >> "$SUMMARY_FILE"
+              fi
+            else
+              echo "Output file does NOT exist!"
+              echo "No updates were performed." >> "$SUMMARY_FILE"
+            fi
+            
+            echo "SUMMARY_FILE_PATH=$SUMMARY_FILE" > /tmp/summary_marker.txt
+
       - name: Extract Output File Path
         id: extract_path
         uses: appleboy/ssh-action@master
@@ -99,72 +129,30 @@ jobs:
           FILE_PATH=$(echo "${{ steps.extract_path.outputs.stdout }}" | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
           echo "output_file=$FILE_PATH" >> $GITHUB_OUTPUT
 
-      - name: Debug Output File Existence
+      - name: Extract Summary File Path
+        id: extract_summary
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            FILE_PATH=$(cat /tmp/output_marker.txt | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
-            if [[ -f "$FILE_PATH" ]]; then
-              echo "Output file exists: $FILE_PATH"
-              ls -lah "$FILE_PATH"
-              cat "$FILE_PATH"
-            else
-              echo "Output file does NOT exist!"
-            fi
+            cat /tmp/summary_marker.txt 2>/dev/null || echo "No summary file found"
 
-      - name: Retrieve Output File
-        id: get_outputs
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.AWS_HOST }}
-          username: ${{ secrets.REMOTE_USER }}
-          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-          script: |
-            cat "${{ steps.extract_path.outputs.output_file }}" 2>/dev/null || echo "No output file found"
-
-      - name: Parse Outputs
-        id: parse_outputs
+      - name: Parse Summary File Path
+        id: parse_summary_path
         run: |
-          DISK_BEFORE=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/disk_space_before=/ {print $2}')
-          DISK_AFTER=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/disk_space_after=/ {print $2}')
-          UPDATE_COUNT=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/update_count=/ {print $2}')
-          
-          UPGRADE_LIST=$(echo "${{ steps.get_outputs.outputs.result }}" | awk '/upgrade_list=/{flag=1; next} flag')
-          
-          echo "disk_space_before=${DISK_BEFORE:-Unknown}" >> $GITHUB_OUTPUT
-          echo "disk_space_after=${DISK_AFTER:-Unknown}" >> $GITHUB_OUTPUT
-          echo "update_count=${UPDATE_COUNT:-0}" >> $GITHUB_OUTPUT
-          echo "upgrade_list=${UPGRADE_LIST:-No packages upgraded}" >> $GITHUB_OUTPUT
-          
-      - name: Create Job Summary
-        if: always()
-        run: |
-          echo "## OS Update Summary" >> $GITHUB_STEP_SUMMARY
-          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ job.status }}" == "success" ]]; then
-            echo "✅ Updated ${{ steps.parse_outputs.outputs.update_count }} packages" >> $GITHUB_STEP_SUMMARY
-            echo "💽 Disk space before: ${{ steps.parse_outputs.outputs.disk_space_before }}" >> $GITHUB_STEP_SUMMARY
-            echo "💽 Disk space after: ${{ steps.parse_outputs.outputs.disk_space_after }}" >> $GITHUB_STEP_SUMMARY
-            if [[ "${{ steps.parse_outputs.outputs.upgrade_list }}" != "No packages upgraded" ]]; then
-              echo "### 📦 Upgraded Packages" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "${{ steps.parse_outputs.outputs.upgrade_list }}" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "❌ Update failed! Check logs for details." >> $GITHUB_STEP_SUMMARY      
+          SUMMARY_FILE=$(echo "${{ steps.extract_summary.outputs.stdout }}" | grep "SUMMARY_FILE_PATH" | cut -d= -f2)
+          echo "summary_file=$SUMMARY_FILE" >> $GITHUB_OUTPUT
 
-      - name: Cleanup Remote File
-        if: always()
+      - name: Retrieve and Append Job Summary
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            FILE_PATH=$(cat /tmp/output_marker.txt | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
-            rm -f "$FILE_PATH" || true
-            rm -f /tmp/output_marker.txt || true
+            cat "${{ steps.parse_summary_path.outputs.summary_file }}" 2>/dev/null || echo "No summary file found"
+      - name: Append to GitHub Summary
+        run: |
+          echo "${{ steps.retrieve_summary.outputs.stdout }}" >> $GITHUB_STEP_SUMMARY
