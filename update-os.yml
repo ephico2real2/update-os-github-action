@@ -113,46 +113,16 @@ jobs:
             
             echo "SUMMARY_FILE_PATH=$SUMMARY_FILE" > /tmp/summary_marker.txt
 
-      - name: Extract Output File Path
-        id: extract_path
+      - name: Extract Summary Content
+        id: get_summary
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            cat /tmp/output_marker.txt 2>/dev/null || echo "No output file found"
+            cat /tmp/os_update_summary.txt 2>/dev/null || echo "No summary file found"
 
-      - name: Parse Output File Path
-        id: parse_output_path
-        run: |
-          FILE_PATH=$(echo "${{ steps.extract_path.outputs.stdout }}" | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
-          echo "output_file=$FILE_PATH" >> $GITHUB_OUTPUT
-
-      - name: Extract Summary File Path
-        id: extract_summary
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.AWS_HOST }}
-          username: ${{ secrets.REMOTE_USER }}
-          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-          script: |
-            cat /tmp/summary_marker.txt 2>/dev/null || echo "No summary file found"
-
-      - name: Parse Summary File Path
-        id: parse_summary_path
-        run: |
-          SUMMARY_FILE=$(echo "${{ steps.extract_summary.outputs.stdout }}" | grep "SUMMARY_FILE_PATH" | cut -d= -f2)
-          echo "summary_file=$SUMMARY_FILE" >> $GITHUB_OUTPUT
-
-      - name: Retrieve and Append Job Summary
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.AWS_HOST }}
-          username: ${{ secrets.REMOTE_USER }}
-          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
-          script: |
-            cat "${{ steps.parse_summary_path.outputs.summary_file }}" 2>/dev/null || echo "No summary file found"
       - name: Append to GitHub Summary
         run: |
-          echo "${{ steps.retrieve_summary.outputs.stdout }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.get_summary.outputs.stdout }}" >> $GITHUB_STEP_SUMMARY
