@@ -41,7 +41,9 @@ jobs:
             
             # Generate unique output file ON REMOTE SERVER
             OUTPUT_FILE="/tmp/update_os_$(date +%s).txt"
-            echo "GITHUB_OUTPUT_FILE=$OUTPUT_FILE" > /tmp/output_marker.txt
+            
+            # Store the path for retrieval
+            echo "OUTPUT_FILE_PATH=$OUTPUT_FILE" > /tmp/output_marker.txt
             
             # Disk check
             DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
@@ -90,6 +92,10 @@ jobs:
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
             cat /tmp/output_marker.txt 2>/dev/null || echo "No output file found"
+        # Extract output file path
+        run: |
+          FILE_PATH=$(cat /tmp/output_marker.txt | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
+          echo "output_file=$FILE_PATH" >> $GITHUB_OUTPUT
 
       - name: Debug Output File Existence
         uses: appleboy/ssh-action@master
@@ -98,7 +104,7 @@ jobs:
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            FILE_PATH=$(cat /tmp/output_marker.txt)
+            FILE_PATH=$(cat /tmp/output_marker.txt | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
             if [[ -f "$FILE_PATH" ]]; then
               echo "Output file exists: $FILE_PATH"
               ls -lah "$FILE_PATH"
@@ -157,6 +163,6 @@ jobs:
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            FILE_PATH=$(cat /tmp/output_marker.txt)
+            FILE_PATH=$(cat /tmp/output_marker.txt | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
             rm -f "$FILE_PATH" || true
             rm -f /tmp/output_marker.txt || true
