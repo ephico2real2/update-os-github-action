@@ -33,7 +33,7 @@ jobs:
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
             set -eo pipefail
             export NEEDRESTART_MODE=a
@@ -41,10 +41,7 @@ jobs:
             
             # Generate unique output file ON REMOTE SERVER
             OUTPUT_FILE="/tmp/update_os_$(date +%s).txt"
-            trap "rm -f $OUTPUT_FILE" EXIT  # Cleanup on exit
-            
-            # Output file marker
-            echo "GITHUB_OUTPUT_FILE=$OUTPUT_FILE"
+            echo "GITHUB_OUTPUT_FILE=$OUTPUT_FILE" > /tmp/output_marker.txt
             
             # Disk check
             DISK_SPACE_BEFORE=$(df -h / | awk 'NR==2 {print $4}')
@@ -56,9 +53,10 @@ jobs:
             sudo apt-get -qy update
             
             # Capture and redirect to file
-            echo "upgrade_list<<EOF" >> "$OUTPUT_FILE"
-            sudo apt list --upgradable 2>/dev/null | grep -v "Listing..." >> "$OUTPUT_FILE"
-            echo "EOF" >> "$OUTPUT_FILE"
+            echo "upgrade_list=" >> "$OUTPUT_FILE"
+            {
+              sudo apt list --upgradable 2>/dev/null | grep -v "Listing..."
+            } >> "$OUTPUT_FILE"
             
             UPDATE_COUNT=$(sudo apt list --upgradable 2>/dev/null | grep -v "Listing..." | wc -l)
 
@@ -85,9 +83,29 @@ jobs:
 
       - name: Extract Output File Path
         id: extract_path
-        run: |
-          FILE_PATH=$(echo "${{ steps.update_os_step.outputs.result }}" | awk -F= '/GITHUB_OUTPUT_FILE=/ {print $2}')
-          echo "output_file=$FILE_PATH" >> $GITHUB_OUTPUT
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          script: |
+            cat /tmp/output_marker.txt 2>/dev/null || echo "No output file found"
+
+      - name: Debug Output File Existence
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          script: |
+            FILE_PATH=$(cat /tmp/output_marker.txt)
+            if [[ -f "$FILE_PATH" ]]; then
+              echo "Output file exists: $FILE_PATH"
+              ls -lah "$FILE_PATH"
+              cat "$FILE_PATH"
+            else
+              echo "Output file does NOT exist!"
+            fi
 
       - name: Retrieve Output File
         id: get_outputs
@@ -95,7 +113,7 @@ jobs:
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
             cat "${{ steps.extract_path.outputs.output_file }}" 2>/dev/null || echo "No output file found"
 
@@ -106,8 +124,7 @@ jobs:
           DISK_AFTER=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/disk_space_after=/ {print $2}')
           UPDATE_COUNT=$(echo "${{ steps.get_outputs.outputs.result }}" | awk -F= '/update_count=/ {print $2}')
           
-          UPGRADE_LIST=$(echo "${{ steps.get_outputs.outputs.result }}" | 
-            awk '/upgrade_list<<EOF/{flag=1; next} /EOF/{flag=0} flag')
+          UPGRADE_LIST=$(echo "${{ steps.get_outputs.outputs.result }}" | awk '/upgrade_list=/{flag=1; next} flag')
           
           echo "disk_space_before=${DISK_BEFORE:-Unknown}" >> $GITHUB_OUTPUT
           echo "disk_space_after=${DISK_AFTER:-Unknown}" >> $GITHUB_OUTPUT
@@ -138,8 +155,8 @@ jobs:
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.REMOTE_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
-            rm -f "${{ steps.extract_path.outputs.output_file }}" || true
-
-
+            FILE_PATH=$(cat /tmp/output_marker.txt)
+            rm -f "$FILE_PATH" || true
+            rm -f /tmp/output_marker.txt || true
