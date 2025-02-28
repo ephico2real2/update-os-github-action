@@ -82,7 +82,7 @@ jobs:
               sudo nohup reboot </dev/null &>/dev/null &
               exit 0
             fi
-
+            
       - name: Extract Output File Path
         id: extract_path
         uses: appleboy/ssh-action@master
@@ -92,9 +92,11 @@ jobs:
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           script: |
             cat /tmp/output_marker.txt 2>/dev/null || echo "No output file found"
-        # Extract output file path
+
+      - name: Parse Output File Path
+        id: parse_output_path
         run: |
-          FILE_PATH=$(cat /tmp/output_marker.txt | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
+          FILE_PATH=$(echo "${{ steps.extract_path.outputs.stdout }}" | grep "OUTPUT_FILE_PATH" | cut -d= -f2)
           echo "output_file=$FILE_PATH" >> $GITHUB_OUTPUT
 
       - name: Debug Output File Existence
